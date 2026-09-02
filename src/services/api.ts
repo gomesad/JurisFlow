@@ -245,6 +245,22 @@ export const api = {
   getNotifications: () => request<Notification[]>('/api/notifications'),
   markNotificationAsRead: (id: string) => request<{ success: boolean }>(`/api/notifications/${id}/read`, { method: 'PUT' }),
 
+  // Supabase PostgreSQL Persistence Status & Sync
+  getSupabaseStatus: () =>
+    request<{
+      connected: boolean;
+      url: string | null;
+      tables: Record<string, number>;
+      error?: string;
+    }>('/api/supabase/status'),
+  syncSupabase: () =>
+    request<{
+      success: boolean;
+      hydrated: boolean;
+      counts: Record<string, number>;
+      message?: string;
+    }>('/api/supabase/sync', { method: 'POST' }),
+
   // Global Search
   search: (query: string) => request<GlobalSearchResult[]>(`/api/search?q=${encodeURIComponent(query)}`),
 };

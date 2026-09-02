@@ -37,6 +37,14 @@ import {
 } from './src/lib/cpcCalendar.ts';
 
 import {
+  getSupabase,
+  checkSupabaseHealth,
+  hydrateFromSupabase,
+  syncToSupabase,
+  deleteFromSupabase,
+} from './server/supabase.ts';
+
+import {
   Tenant,
   Branch,
   User,
@@ -129,6 +137,16 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  // Hydrate data from Supabase if credentials and tables are available
+  try {
+    const hyd = await hydrateFromSupabase(db);
+    if (hyd.success) {
+      console.log('[Supabase] Startup hydration finished:', hyd.counts);
+    }
+  } catch (err) {
+    console.warn('[Supabase] Startup hydration skipped:', err);
+  }
+
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -173,11 +191,56 @@ async function startServer() {
       diff,
     };
     db.auditLogs.unshift(newLog);
+
+    // Sync audit log to Supabase in background
+    syncToSupabase('audit_logs', {
+      id: newLog.id,
+      tenant_id: newLog.tenantId,
+      user_id: newLog.userId,
+      user_name: newLog.userName,
+      action: newLog.action,
+      entity: newLog.entityType,
+      entity_id: newLog.entityId,
+      details: newLog.details,
+      ip_address: newLog.ip,
+      created_at: newLog.timestamp,
+    });
   }
 
   // ==========================================
   // API ROUTES
   // ==========================================
+
+  // --- SUPABASE POSTGRESQL STATUS & SYNC ---
+  app.get('/api/supabase/status', async (req: Request, res: Response) => {
+    const health = await checkSupabaseHealth();
+    res.json({
+      ...health,
+      memoryCounts: {
+        tenants: db.tenants.length,
+        branches: db.branches.length,
+        users: db.users.length,
+        roles: db.roles.length,
+        persons: db.persons.length,
+        clients: db.clients.length,
+        cases: db.cases.length,
+        deadlines: db.deadlines.length,
+        contracts: db.feeContracts.length,
+        receivables: db.receivables.length,
+        auditLogs: db.auditLogs.length,
+      },
+    });
+  });
+
+  app.post('/api/supabase/sync', async (req: Request, res: Response) => {
+    const result = await hydrateFromSupabase(db);
+    res.json({
+      ...result,
+      message: result.success
+        ? 'Sincronização com Supabase PostgreSQL executada com sucesso!'
+        : 'Não foi possível sincronizar com Supabase (verifique as tabelas e credenciais).',
+    });
+  });
 
   // --- AUTH & TENANCY CONTEXT ---
   app.get('/api/auth/me', (req: Request, res: Response) => {
@@ -870,6 +933,24 @@ async function startServer() {
       createdAt: new Date().toISOString(),
     };
     db.persons.unshift(newPerson);
+
+    // Supabase Persistence
+    syncToSupabase('persons', {
+      id: newPerson.id,
+      tenant_id: newPerson.tenantId,
+      type: newPerson.type,
+      name: newPerson.name,
+      trade_name: newPerson.tradeName,
+      document: newPerson.document,
+      rg_ie: newPerson.stateRegOrRg,
+      email: newPerson.email,
+      phone: newPerson.phone,
+      whatsapp: newPerson.mobilePhone,
+      address: newPerson.address,
+      notes: newPerson.notes,
+      created_at: newPerson.createdAt,
+    });
+
     logAudit(req, 'PERSON', newPerson.id, 'CREATE', `Cadastrou pessoa: ${newPerson.name} (${newPerson.document})`);
     res.status(201).json(newPerson);
   });
@@ -882,6 +963,21 @@ async function startServer() {
     }
     const updated = { ...db.persons[index], ...req.body };
     db.persons[index] = updated;
+
+    // Supabase Persistence
+    syncToSupabase('persons', {
+      id: updated.id,
+      tenant_id: updated.tenantId,
+      name: updated.name,
+      trade_name: updated.tradeName,
+      document: updated.document,
+      email: updated.email,
+      phone: updated.phone,
+      address: updated.address,
+      notes: updated.notes,
+      updated_at: new Date().toISOString(),
+    });
+
     logAudit(req, 'PERSON', updated.id, 'UPDATE', `Atualizou dados cadastrais de: ${updated.name}`);
     res.json(updated);
   });
@@ -903,6 +999,11 @@ async function startServer() {
 
     db.persons = db.persons.filter((p) => p.id !== req.params.id);
     db.clients = db.clients.filter((c) => c.personId !== req.params.id);
+
+    // Supabase Delete
+    deleteFromSupabase('persons', 'id', req.params.id);
+    deleteFromSupabase('clients', 'person_id', req.params.id);
+
     logAudit(req, 'PERSON', person.id, 'DELETE', `Excluiu cadastro de: ${person.name}`);
     res.json({ success: true });
   });
@@ -933,6 +1034,17 @@ async function startServer() {
       };
       db.persons.unshift(newPerson);
       personId = newPerson.id;
+
+      syncToSupabase('persons', {
+        id: newPerson.id,
+        tenant_id: newPerson.tenantId,
+        type: newPerson.type,
+        name: newPerson.name,
+        document: newPerson.document,
+        email: newPerson.email,
+        phone: newPerson.phone,
+        created_at: newPerson.createdAt,
+      });
     }
 
     const newClient: Client = {
@@ -950,6 +1062,17 @@ async function startServer() {
     };
 
     db.clients.unshift(newClient);
+
+    // Supabase Persistence
+    syncToSupabase('clients', {
+      id: newClient.id,
+      tenant_id: newClient.tenantId,
+      person_id: newClient.personId,
+      category: 'CORPORATE',
+      status: newClient.status,
+      created_at: new Date().toISOString(),
+    });
+
     const person = db.persons.find((p) => p.id === personId);
     logAudit(req, 'CLIENT', newClient.id, 'CREATE', `Cadastrou novo cliente: ${person?.name || newClient.clientCode}`);
     res.status(201).json({ ...newClient, person });
@@ -1065,6 +1188,34 @@ async function startServer() {
       if (client) client.totalCasesCount++;
     });
 
+    // Supabase Persistence
+    syncToSupabase('cases', {
+      id: newCase.id,
+      tenant_id: newCase.tenantId,
+      branch_id: newCase.branchId,
+      cnj: newCase.caseNumber,
+      title: newCase.title,
+      area: newCase.legalArea,
+      phase: newCase.phase,
+      status: newCase.status,
+      court: newCase.court,
+      judge_or_organ: newCase.judgeName,
+      client_id: newCase.parties[0]?.personId ? (db.clients.find(c => c.personId === newCase.parties[0].personId)?.id || 'cli-01') : 'cli-01',
+      client_role: newCase.parties[0]?.role || 'AUTOR',
+      opposing_party: (() => {
+        const opposingParty = newCase.parties.find(p => p.role === 'REU');
+        if (!opposingParty) return 'Parte Contrária';
+        const person = db.persons.find(p => p.id === opposingParty.personId);
+        return person?.name || 'Parte Contrária';
+      })(),
+      economic_value: newCase.claimValue,
+      expected_risk: newCase.contingencyRisk,
+      responsible_user_id: newCase.responsibleLawyerId,
+      distribution_date: newCase.distributionDate,
+      created_at: newCase.createdAt,
+      updated_at: newCase.updatedAt,
+    });
+
     logAudit(req, 'CASE', newCase.id, 'CREATE', `Cadastrou novo processo: ${newCase.title} (${newCase.caseNumber})`);
     res.status(201).json(newCase);
   });
@@ -1079,6 +1230,23 @@ async function startServer() {
       ...req.body,
       updatedAt: new Date().toISOString(),
     };
+
+    // Supabase Persistence
+    syncToSupabase('cases', {
+      id: db.cases[idx].id,
+      tenant_id: db.cases[idx].tenantId,
+      cnj: db.cases[idx].caseNumber,
+      title: db.cases[idx].title,
+      area: db.cases[idx].legalArea,
+      phase: db.cases[idx].phase,
+      status: db.cases[idx].status,
+      court: db.cases[idx].court,
+      economic_value: db.cases[idx].claimValue,
+      expected_risk: db.cases[idx].contingencyRisk,
+      responsible_user_id: db.cases[idx].responsibleLawyerId,
+      updated_at: db.cases[idx].updatedAt,
+    });
+
     logAudit(req, 'CASE', db.cases[idx].id, 'UPDATE', `Atualizou caso: ${db.cases[idx].caseNumber}`);
     res.json(db.cases[idx]);
   });
@@ -1174,6 +1342,23 @@ async function startServer() {
       if (theCase) theCase.deadlinesCount++;
     }
 
+    // Supabase Persistence
+    syncToSupabase('deadlines', {
+      id: newDl.id,
+      tenant_id: newDl.tenantId,
+      case_id: newDl.caseId || (db.cases[0]?.id || 'case-01'),
+      assigned_user_id: newDl.responsibleUserId,
+      title: newDl.title,
+      description: newDl.description,
+      publication_date: newDl.publishDate,
+      due_date: newDl.dueDate,
+      days_count: newDl.daysCount,
+      counting_type: newDl.calculationType === 'DIAS_UTEIS_CPC' ? 'BUSINESS_DAYS' : 'CALENDAR_DAYS',
+      priority: 'HIGH',
+      status: newDl.status,
+      created_at: newDl.createdAt,
+    });
+
     logAudit(req, 'DEADLINE', newDl.id, 'CREATE', `Cadastrou prazo fatal: ${newDl.title} com vencimento em ${newDl.dueDate}`);
     res.status(201).json(newDl);
   });
@@ -1188,6 +1373,16 @@ async function startServer() {
       db.deadlines[idx].completedAt = new Date().toISOString();
       db.deadlines[idx].completedBy = 'Dr. Carlos Silveira';
     }
+
+    // Supabase Persistence
+    syncToSupabase('deadlines', {
+      id: db.deadlines[idx].id,
+      tenant_id: db.deadlines[idx].tenantId,
+      status: db.deadlines[idx].status,
+      completed_at: db.deadlines[idx].completedAt || null,
+      updated_at: new Date().toISOString(),
+    });
+
     logAudit(req, 'DEADLINE', db.deadlines[idx].id, 'UPDATE', `Alterou status do prazo para: ${req.body.status}`);
     res.json(db.deadlines[idx]);
   });

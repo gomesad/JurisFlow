@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ShieldCheck,
   Building2,
@@ -26,7 +26,12 @@ import {
   Crown,
   ExternalLink,
   ArrowRight,
+  Database,
+  RefreshCw,
+  Server,
+  CheckCircle,
 } from 'lucide-react';
+import { api } from '../../services/api';
 import {
   Tenant,
   Branch,
@@ -141,7 +146,45 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     currentUser?.email?.includes('superadmin') ||
     currentRole?.code === 'SUPER_ADMIN';
 
-  const [activeTab, setActiveTab] = useState<'GOVERNANCE' | 'TENANTS' | 'USERS' | 'RBAC' | 'AUDIT' | 'LGPD'>('GOVERNANCE');
+  const [activeTab, setActiveTab] = useState<'GOVERNANCE' | 'TENANTS' | 'USERS' | 'RBAC' | 'AUDIT' | 'LGPD' | 'DATABASE'>('GOVERNANCE');
+
+  // Supabase Status State
+  const [supabaseStatus, setSupabaseStatus] = useState<{
+    connected: boolean;
+    url: string | null;
+    tables: Record<string, number>;
+    memoryCounts?: Record<string, number>;
+    error?: string;
+  } | null>(null);
+  const [isSyncingSupabase, setIsSyncingSupabase] = useState(false);
+  const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+
+  const fetchSupabaseStatus = async () => {
+    try {
+      const res = await api.getSupabaseStatus();
+      setSupabaseStatus(res);
+    } catch (err: any) {
+      console.warn('Failed to fetch Supabase status', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchSupabaseStatus();
+  }, []);
+
+  const handleSyncWithSupabase = async () => {
+    setIsSyncingSupabase(true);
+    setSyncFeedback(null);
+    try {
+      const res = await api.syncSupabase();
+      setSyncFeedback(res.message || 'Sincronização concluída com sucesso!');
+      await fetchSupabaseStatus();
+    } catch (err: any) {
+      setSyncFeedback('Erro ao sincronizar com Supabase: ' + err.message);
+    } finally {
+      setIsSyncingSupabase(false);
+    }
+  };
 
   // Tenant Modal State
   const [isTenantModalOpen, setIsTenantModalOpen] = useState(false);
@@ -625,6 +668,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         >
           <ShieldCheck className="w-4 h-4 text-indigo-600" />
           <span>Portal de Privacidade LGPD ({lgpdConsents.length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('DATABASE')}
+          className={`px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition-all whitespace-nowrap ${
+            activeTab === 'DATABASE'
+              ? 'bg-white text-slate-900 shadow-xs'
+              : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Database className="w-4 h-4 text-emerald-600" />
+          <span className="flex items-center gap-1.5">
+            Supabase & Banco de Dados
+            <span
+              className={`w-2 h-2 rounded-full ${
+                supabaseStatus?.connected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400'
+              }`}
+            />
+          </span>
         </button>
       </div>
 
@@ -1322,6 +1384,168 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* 7. DATABASE & SUPABASE PERSISTENCE */}
+      {activeTab === 'DATABASE' && (
+        <div className="space-y-6">
+          {/* Header Card */}
+          <div className="p-6 rounded-2xl bg-white border border-slate-200 space-y-4 shadow-xs">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center text-emerald-600">
+                  <Database className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-base font-bold text-slate-900">Supabase PostgreSQL</h2>
+                    <span
+                      className={`text-[10px] px-2.5 py-0.5 rounded-full font-semibold font-mono border flex items-center gap-1.5 ${
+                        supabaseStatus?.connected
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : 'bg-amber-50 text-amber-700 border-amber-200'
+                      }`}
+                    >
+                      <span
+                        className={`w-2 h-2 rounded-full ${
+                          supabaseStatus?.connected ? 'bg-emerald-500' : 'bg-amber-500'
+                        }`}
+                      />
+                      {supabaseStatus?.connected ? 'Online & Sincronizado' : 'Aguardando Credenciais'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Banco de dados relacional com isolamento multi-tenant, Row-Level Security (RLS) e persistência em tempo real
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={fetchSupabaseStatus}
+                  className="px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 hover:bg-slate-100 text-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-all"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Atualizar Status</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSyncWithSupabase}
+                  disabled={isSyncingSupabase}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold flex items-center gap-2 shadow-xs transition-all disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSupabase ? 'animate-spin' : ''}`} />
+                  <span>{isSyncingSupabase ? 'Sincronizando...' : 'Sincronizar Dados Agora'}</span>
+                </button>
+              </div>
+            </div>
+
+            {syncFeedback && (
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-700 font-mono">
+                {syncFeedback}
+              </div>
+            )}
+          </div>
+
+          {/* Connection Details & Table Matrix */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Left: Infrastructure Details */}
+            <div className="lg:col-span-1 space-y-4">
+              <div className="p-5 rounded-2xl bg-white border border-slate-200 space-y-3.5 shadow-xs">
+                <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
+                  <Server className="w-4 h-4 text-emerald-600" />
+                  Infraestrutura Supabase
+                </h3>
+
+                <div className="space-y-2.5 text-xs">
+                  <div>
+                    <span className="text-slate-500 block text-[11px]">URL do Projeto:</span>
+                    <span className="font-mono font-medium text-slate-900 break-all">
+                      {supabaseStatus?.url || 'https://xxx.supabase.co (Configurado via .env)'}
+                    </span>
+                  </div>
+
+                  <div>
+                    <span className="text-slate-500 block text-[11px]">Isolamento Multi-Tenant:</span>
+                    <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> Ativo (RLS por tenant_id)
+                    </span>
+                  </div>
+
+                  <div>
+                    <span className="text-slate-500 block text-[11px]">Modo de Operação:</span>
+                    <span className="font-mono text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md">
+                      Híbrido (Cache em Memória + Postgres Sync)
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-5 rounded-2xl bg-slate-900 text-white space-y-3 shadow-xs">
+                <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                  <Lock className="w-4 h-4 text-emerald-400" />
+                  Políticas de Segurança (RLS)
+                </h3>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Todas as tabelas possuem <code>ROW LEVEL SECURITY</code> ativado. A função SQL <code>user_belongs_to_tenant()</code> garante que nenhum usuário veja dados de outro escritório ou filial não autorizada.
+                </p>
+              </div>
+            </div>
+
+            {/* Right: Synced Tables Inventory */}
+            <div className="lg:col-span-2 p-5 rounded-2xl bg-white border border-slate-200 space-y-4 shadow-xs">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                  Tabelas Relacionais & Contagem de Registros
+                </h3>
+                <span className="text-[11px] font-mono text-slate-500">
+                  {Object.keys(supabaseStatus?.tables || {}).length} tabelas monitoradas
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                {[
+                  { key: 'tenants', label: 'Escritórios / Tenants', icon: Building2 },
+                  { key: 'branches', label: 'Unidades & Filiais', icon: Building2 },
+                  { key: 'users', label: 'Usuários & Advogados', icon: Users },
+                  { key: 'roles', label: 'Funções & Permissões RBAC', icon: Key },
+                  { key: 'persons', label: 'Pessoas Físicas & Jurídicas', icon: Users },
+                  { key: 'clients', label: 'Clientes Cadastrados', icon: Users },
+                  { key: 'cases', label: 'Processos Judiciais & Casos', icon: Briefcase },
+                  { key: 'deadlines', label: 'Prazos Fatais & Audiências', icon: AlertTriangle },
+                  { key: 'financial_receivables', label: 'Contas a Receber / Faturas', icon: Award },
+                  { key: 'audit_logs', label: 'Trilha de Auditoria & Logs', icon: Lock },
+                ].map((item) => {
+                  const dbCount = supabaseStatus?.tables?.[item.key] ?? 0;
+                  const memoryCount = (supabaseStatus?.memoryCounts as any)?.[item.key] ?? dbCount;
+                  const Icon = item.icon;
+
+                  return (
+                    <div
+                      key={item.key}
+                      className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <Icon className="w-4 h-4 text-indigo-600" />
+                        <div>
+                          <p className="font-semibold text-slate-900">{item.label}</p>
+                          <p className="font-mono text-[10px] text-slate-500">tabela: {item.key}</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <span className="font-mono font-bold text-sm text-slate-900">
+                          {supabaseStatus?.connected ? dbCount : memoryCount}
+                        </span>
+                        <span className="block text-[10px] text-emerald-600 font-medium">registros</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </div>
       )}
